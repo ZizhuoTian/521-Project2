@@ -1,0 +1,554 @@
+library(tidyverse)
+library(GGally)
+library(gridExtra)
+library(caret)
+library(MASS)
+library(pROC)
+library(rpart)
+library(PerformanceAnalytics)
+set.seed(9527)
+
+# Data Collection and Exploration
+## (b) well-labeled beautiful maps
+load_data <- function(filename) {
+  # a function load data to a dataframe from a text file
+  df <- read.table(filename, 
+                   col.names = c('x', 'y', 'label', 'NDAI', 'SD', 'CORR', 'DF', 
+                                 'CF', 'BF', 'AF', 'AN'))
+  return(df)
+}
+
+label_ratio_check <- function(data) {
+  data %>% group_by(label) %>% summarise(
+    count=n(),
+    label_ratio = count / nrow(data)
+  )
+}
+
+get_summary <- function(filename, title){
+  # a function to summarize the image data
+  # Input: file path
+  # Output: summary for each label count and ratio with a plot too
+  df <- load_data(filename)
+  
+  # a temporary df for summarized count of each label and percentage of the label
+  temp <- label_ratio_check(df)
+  
+  print('count of each label of its percentage to total number of labels')
+  print(temp)
+  df$label <- as.character(df$label)
+  df %>% ggplot(aes(x=x,y=y, color=label)) + geom_line() + 
+    ggtitle(title) + 
+    xlab('x coordinate') + ylab('y coordinate')
+}
+
+get_summary('./image_data/imagem1.txt', 'Weather distribution of imagem1 dataset')
+get_summary('./image_data/imagem2.txt', 'Weather distribution of imagem2 dataset')
+get_summary('./image_data/imagem3.txt', 'Weather distribution of imagem3 dataset')
+
+## (b) visual and quantitative EDA of the dataset
+# merge the three images data
+df <- load_data('./image_data/imagem1.txt')
+df2 <- load_data('./image_data/imagem2.txt')
+df3 <- load_data('./image_data/imagem3.txt')
+df <- merge(df, df2, all = TRUE) %>% merge(df3, all = TRUE)
+df$label <- as.factor(df$label)
+
+chart.Correlation(df[, -3])
+
+plot_distribution <- function(feature, df){
+  # function to show density plot and box plot of a feature
+  feature <- sym(feature)  
+  f1<- ggplot(data=df,aes(x=!!feature, fill=label) ) + geom_density(alpha=.4) + 
+    ggtitle(paste('Density plot of', feature, 'according to label'))
+  
+  f2<- ggplot(data=df,aes(y=!!feature, fill=label) ) + geom_boxplot(alpha=.4) + 
+    ggtitle(paste('Box plot of', feature, 'according to label'))
+  grid.arrange(f1, f2, ncol=2)
+  
+}
+
+plot_distribution('NDAI', df)
+plot_distribution('SD', df)
+plot_distribution('CORR', df)
+
+
+# Preparation
+## (a) Split the entire data
+
+# merge the three images data
+df <- load_data('./image_data/imagem1.txt')
+df2 <- load_data('./image_data/imagem2.txt')
+df3 <- load_data('./image_data/imagem3.txt')
+df <- merge(df, df2, all = TRUE) %>% merge(df3, all = TRUE)
+
+# remove unlabeled data and apply standard normalized on the predictors
+df <- df %>% filter(label!=0 )
+df[, -3] <- df[, -3] %>% scale
+df$label <- as.factor(df$label)
+
+
+# shuffle the whole dataset
+df <- df[sample(1:nrow(df)), ]
+training_index <- createDataPartition(df$label, p = 0.8, list=FALSE, times=1)
+training_set <- df[training_index, ]
+temp <- df[-training_index, ]
+valid_index <- sample(1:floor(nrow(temp)/2))
+valid_set <- temp[valid_index, ]
+testing_set <- temp[-valid_index,]
+
+
+#--- Split the data with strata 
+stratified <- df %>% group_by(label) %>% sample_n(size = 10000) %>% as.data.frame()
+stratified <- stratified[sample(1:nrow(stratified)), ]
+training_index <- sample(1:floor(nrow(stratified) * 0.8))
+strata_training_set <- stratified[training_index, ]
+temp <- stratified[-training_index, ]
+valid_index <- sample(1:floor(nrow(temp)/2))
+strata_valid_set <- temp[valid_index, ]
+strata_testing_set <- temp[-valid_index,]
+
+
+## (B) Report the accuracy of a trivial classifier
+label_ratio_check(testing_set)
+label_ratio_check(valid_set)
+label_ratio_check(strata_testing_set)
+label_ratio_check(strata_valid_set)
+
+## (C) suggest three of the “best” features
+library(party)
+cf1 <- cforest(label~ ., data = training_set, 
+               control = cforest_unbiased(mtry=2, ntree = 5))
+importance_df <- varimp(cf1)
+importance_df <- tibble(feature=names(importance_df), 
+                        importance=importance_df) %>% 
+  arrange(desc(importance))
+ggplot(data=importance_df, aes(reorder(feature, -importance), 
+                               weight=importance)) + geom_bar() + 
+  labs(x='feature', y='importance', title='barplot of feature importance')
+
+
+# Modeling
+## merge training and validation set
+
+full_training_set = merge(training_set, testing_set, all = TRUE) 
+full_strata_training_set = merge(strata_training_set, strata_testing_set, all = TRUE) 
+
+## model 1:  logistic regression
+# on the first split method
+kfolds = 5
+folds <- createFolds(full_train_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_train_set[valid_index, ]
+  temp_train_set <- full_train_set[-valid_index,]
+  model<-glm(label~.,
+             family = binomial(link=logit), 
+             data=temp_train_set )
+  
+  temp_proba <-predict(model,
+                       type='response',
+                       newdata=temp_valid_set)
+  
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# on the second split method
+kfolds = 5
+folds <- createFolds(full_strata_training_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_strata_training_set[valid_index, ]
+  temp_train_set <- full_strata_training_set[-valid_index,]
+  model<-glm(label~.,
+             family = binomial(link=logit), 
+             data=temp_train_set )
+  
+  temp_proba <-predict(model,
+                       type='response',
+                       newdata=temp_valid_set)
+  
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# use training set on Random sampling
+Logit_model<-glm(label~.,
+                 family = binomial(link=logit), 
+                 data=training_set )
+proba <-predict(Logit_model,
+                type='response',
+                newdata=testing_set)
+
+pred =ifelse(proba>0.5,1,-1)
+Logit_accuracy = mean(pred == testing_set$label)
+Logit_accuracy
+
+# plot ROC
+roc1<-roc(testing_set$label,proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for Logistic regression on Random sampling')
+
+
+# use training set on Stratified sampling
+strata_Logit_model<-glm(label~.,
+                        family = binomial(link=logit), 
+                        data=strata_training_set )
+proba <-predict(strata_Logit_model,
+                type='response',
+                newdata=strata_testing_set)
+
+pred =ifelse(proba>0.5,1,-1)
+Logit_accuracy = mean(pred == strata_testing_set$label)
+Logit_accuracy
+
+# plot ROC
+roc1<-roc(strata_testing_set$label,proba)
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for Logistic regression on Stratified sampling')
+
+
+## model 2:  decision tree
+# on the first split method
+kfolds = 5
+folds <- createFolds(full_train_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_train_set[valid_index, ]
+  temp_train_set <- full_train_set[-valid_index,]
+  model <- rpart(label ~ ., data=temp_train_set, control=rpart.control(minsplit=50, cp=0))
+  temp_proba <-predict(model,
+                       type='prob',
+                       newdata=temp_valid_set)[,2]
+  
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# on the second split method
+kfolds = 5
+folds <- createFolds(full_strata_training_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_strata_training_set[valid_index, ]
+  temp_train_set <- full_strata_training_set[-valid_index,]
+  model <- rpart(label ~ ., data=temp_train_set, control=rpart.control(minsplit=50, cp=0))
+  temp_proba <-predict(model,
+                       type='prob',
+                       newdata=temp_valid_set)[,2]
+  
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# use training set on Random sampling
+DT_model <- rpart(label ~ ., data=training_set, control=rpart.control(minsplit=50, cp=0))
+temp_proba <-predict(DT_model,
+                     type='prob',
+                     newdata=testing_set)[,2]
+
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+accuracy = mean(temp_pred == testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for decision tree on Random sampling')
+
+
+
+# use training set on Stratified sampling
+strata_DT_model <- rpart(label ~ ., data=strata_training_set, control=rpart.control(minsplit=50, cp=0))
+temp_proba <-predict(strata_DT_model,
+                     type='prob',
+                     newdata=strata_testing_set)[,2]
+
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+accuracy = mean(temp_pred == strata_testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(strata_testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for decision tree on Stratified sampling')
+
+
+## model 3: Random Forest
+# on the first split method
+kfolds = 5
+folds <- createFolds(full_train_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_train_set[valid_index, ]
+  temp_train_set <- full_train_set[-valid_index,]
+  model <- cforest(label ~ ., data=temp_train_set, control = cforest_unbiased(mtry = 2,
+                                                                              ntree = 60))
+  temp_proba <-predict(model,
+                       type='prob',
+                       newdata=temp_valid_set)
+  
+  temp_proba = unlist(temp_proba)[seq(2, 2*length(temp_proba), 2)]
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# on the second split method
+kfolds = 5
+folds <- createFolds(full_strata_training_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_strata_training_set[valid_index, ]
+  temp_train_set <- full_strata_training_set[-valid_index,]
+  model <- cforest(label ~ ., data=temp_train_set, control = cforest_unbiased(mtry = 2,
+                                                                              ntree = 60))
+  temp_proba <-predict(model,
+                       type='prob',
+                       newdata=temp_valid_set)
+  
+  temp_proba = unlist(temp_proba)[seq(2, 2*length(temp_proba), 2)]
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# use training set on Random sampling
+RF_model <- cforest(label ~ ., data = training_set, control = cforest_unbiased(mtry = 2,
+                                                                               ntree = 60))
+temp_proba <-predict(RF_model,
+                     type='prob',
+                     newdata=testing_set)
+
+temp_proba = unlist(temp_proba)[seq(2, 2*length(temp_proba), 2)]
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+
+accuracy = mean(temp_pred == testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for random forest on Random sampling')
+
+
+# use training set on Stratified sampling
+strata_RF_model <- cforest(label ~ ., data = strata_training_set, control = cforest_unbiased(mtry = 2,
+                                                                                             ntree = 60))
+temp_proba <-predict(strata_RF_model,
+                     type='prob',
+                     newdata=strata_testing_set)
+
+temp_proba = unlist(temp_proba)[seq(2, 2*length(temp_proba), 2)]
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+
+accuracy = mean(temp_pred == strata_testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(strata_testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for random forest on Stratified sampling')
+
+
+
+## model 4 : SVM
+library(e1071)
+
+# on the first split method
+kfolds = 5
+folds <- createFolds(full_train_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_train_set[valid_index, ]
+  temp_train_set <- full_train_set[-valid_index,]
+  model <- svm(label ~ ., data=temp_train_set, probability=T)
+  
+  temp_proba <-predict(model,
+                       probability=T,
+                       newdata=temp_valid_set)
+  
+  temp_proba = attr(temp_proba, 'probabilities')[,1]
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# on the second split method
+kfolds = 5
+folds <- createFolds(full_strata_training_set$label, k=kfolds)
+fold_accuracy_arr = c(1:kfolds)
+for (i in 1: kfolds){
+  valid_index = folds[[i]]
+  temp_valid_set <- full_strata_training_set[valid_index, ]
+  temp_train_set <- full_strata_training_set[-valid_index,]
+  model <- svm(label ~ ., data=temp_train_set, probability=T)
+  
+  temp_proba <-predict(model,
+                       probability=T,
+                       newdata=temp_valid_set)
+  
+  temp_proba = attr(temp_proba, 'probabilities')[,1]
+  temp_pred =ifelse(temp_proba>0.5,1,-1)
+  fold_accuracy = mean(temp_pred == temp_valid_set$label)
+  print(paste('validation fold', i, 'accuracy:', fold_accuracy))
+  fold_accuracy_arr[i] = fold_accuracy
+} 
+
+# use training set on Random sampling
+SVM_model <- svm(label ~ ., data=training_set, probability=T)
+
+temp_proba <-predict(model,
+                     probability=T,
+                     newdata=testing_set)
+
+temp_proba = attr(temp_proba, 'probabilities')[,1]
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+
+accuracy = mean(temp_pred == testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for SVM on Random sampling')
+
+
+
+# use training set on Stratified sampling
+strata_SVM_model <- svm(label ~ ., data=strata_training_set, probability=T)
+
+temp_proba <-predict(strata_SVM_model,
+                     probability=T,
+                     newdata=strata_testing_set)
+
+temp_proba = attr(temp_proba, 'probabilities')[,1]
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+
+accuracy = mean(temp_pred == strata_testing_set$label)
+accuracy
+
+# plot ROC
+roc1<-roc(strata_testing_set$label,temp_proba)
+roc1
+
+plot(roc1, 
+     print.auc=T, 
+     auc.polygon=T, 
+     auc.polygon.col="skyblue",
+     grid=c(0.1, 0.2),
+     grid.col=c("green", "red"), 
+     max.auc.polygon=T,
+     print.thres=T, main = 'ROC for SVM on Stratified sampling')
+
+
+
+# Diagnostics
+importance_df <- varimp(RF_model)
+importance_df <- tibble(feature=names(importance_df), 
+                        importance=importance_df) %>% 
+  arrange(desc(importance))
+ggplot(data=importance_df, aes(reorder(feature, -importance), 
+                               weight=importance)) + geom_bar() + 
+  labs(x='feature', y='importance', title='barplot of feature importance')
+
+fit.forest <- randomForest(label~., data=training_set,        
+                           na.action=na.roughfix,
+                           importance=TRUE)  
+plot(fit.forest)
+
+print(fit.forest)
+
+plot(margin(fit.forest,testing_set$label))
+
+temp_proba <-predict(RF_model,
+                     type='prob',
+                     newdata=testing_set)
+
+temp_proba = unlist(temp_proba)[seq(2, 2*length(temp_proba), 2)]
+temp_pred =ifelse(temp_proba>0.5,1,-1)
+
+confusionMatrix(table(temp_pred, testing_set$label))
+
+library(ggpol)
+ggplot() + geom_confmat(aes(x = testing_set$label, y = temp_pred),
+                        normalize = TRUE, text.perc = TRUE)+
+  labs(x = "expert label",y = "Prediction label")+
+  scale_fill_gradient2(low="darkblue", high="lightgreen")
+
+
+
