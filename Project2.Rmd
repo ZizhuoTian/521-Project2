@@ -1,5 +1,6 @@
 ---
 title: "final"
+author: Zizhuo Tian
 output: html_document
 date: '2022-12-05'
 ---
@@ -186,12 +187,12 @@ full_strata_training_set = merge(strata_training_set, strata_testing_set, all = 
 ```{r}
 # on the first split method
 kfolds = 5
-folds <- createFolds(full_train_set$label, k=kfolds)
+folds <- createFolds(full_training_set$label, k=kfolds)
 fold_accuracy_arr = c(1:kfolds)
 for (i in 1: kfolds){
   valid_index = folds[[i]]
-  temp_valid_set <- full_train_set[valid_index, ]
-  temp_train_set <- full_train_set[-valid_index,]
+  temp_valid_set <- full_training_set[valid_index, ]
+  temp_train_set <- full_training_set[-valid_index,]
   model<-glm(label~.,
           family = binomial(link=logit), 
           data=temp_train_set )
@@ -298,12 +299,12 @@ plot(roc1,
 ```{r}
 # on the first split method
 kfolds = 5
-folds <- createFolds(full_train_set$label, k=kfolds)
+folds <- createFolds(full_training_set$label, k=kfolds)
 fold_accuracy_arr = c(1:kfolds)
 for (i in 1: kfolds){
   valid_index = folds[[i]]
-  temp_valid_set <- full_train_set[valid_index, ]
-  temp_train_set <- full_train_set[-valid_index,]
+  temp_valid_set <- full_training_set[valid_index, ]
+  temp_train_set <- full_training_set[-valid_index,]
   model <- rpart(label ~ ., data=temp_train_set, control=rpart.control(minsplit=50, cp=0))
   temp_proba <-predict(model,
                        type='prob',
@@ -398,12 +399,12 @@ plot(roc1,
 ```{r}
 # on the first split method
 kfolds = 5
-folds <- createFolds(full_train_set$label, k=kfolds)
+folds <- createFolds(full_training_set$label, k=kfolds)
 fold_accuracy_arr = c(1:kfolds)
 for (i in 1: kfolds){
   valid_index = folds[[i]]
-  temp_valid_set <- full_train_set[valid_index, ]
-  temp_train_set <- full_train_set[-valid_index,]
+  temp_valid_set <- full_training_set[valid_index, ]
+  temp_train_set <- full_training_set[-valid_index,]
   model <- cforest(label ~ ., data=temp_train_set, control = cforest_unbiased(mtry = 2,
                                                ntree = 60))
   temp_proba <-predict(model,
@@ -512,12 +513,12 @@ library(e1071)
 
 # on the first split method
 kfolds = 5
-folds <- createFolds(full_train_set$label, k=kfolds)
+folds <- createFolds(full_training_set$label, k=kfolds)
 fold_accuracy_arr = c(1:kfolds)
 for (i in 1: kfolds){
   valid_index = folds[[i]]
-  temp_valid_set <- full_train_set[valid_index, ]
-  temp_train_set <- full_train_set[-valid_index,]
+  temp_valid_set <- full_training_set[valid_index, ]
+  temp_train_set <- full_training_set[-valid_index,]
   model <- svm(label ~ ., data=temp_train_set, probability=T)
   
   temp_proba <-predict(model,
